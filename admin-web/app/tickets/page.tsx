@@ -30,6 +30,7 @@ type Ticket = {
   receiver_phone: string | null;
   ticket_text: string | null;
   created_at: string;
+  status: string;
 };
 
 function formatDate(dateStr: string): string {
@@ -108,6 +109,12 @@ const columns: Column<Ticket>[] = [
     label: 'Paiement',
     sortable: true,
     render: (row) => <StatusBadge status={row.payment_mode} />,
+  },
+  {
+    key: 'status',
+    label: 'Statut',
+    sortable: true,
+    render: (row) => <StatusBadge status={row.status ?? 'en attente'} />,
   },
   {
     key: 'passenger_name',
@@ -342,6 +349,18 @@ export default function TicketsPage() {
                   { value: 'cash', label: 'cash' },
                   { value: 'card', label: 'card' },
                   { value: 'mobile', label: 'mobile' },
+                ],
+              },
+              {
+                name: 'status',
+                label: 'Statut',
+                type: 'select',
+                required: true,
+                initialValue: selectedTicket.status ?? 'en attente',
+                options: [
+                  { value: 'en attente', label: 'En attente' },
+                  { value: 'validé', label: 'Validé' },
+                  { value: 'annulé', label: 'Annulé' },
                 ],
               },
               { name: 'passengerName', label: 'Nom passager', initialValue: selectedTicket.passenger_name ?? '' },

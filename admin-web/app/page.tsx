@@ -48,6 +48,460 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<any>(null);
   const [tickets, setTickets] = useState<any[]>([]);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportExcel = async () => {
+    if (exporting) return;
+    try {
+      setExporting(true);
+      const [agentsRes, devicesRes, ticketsRes, sessionsRes] = await Promise.all([
+        fetch(`${apiBase}/agents`, { cache: 'no-store' }),
+        fetch(`${apiBase}/devices`, { cache: 'no-store' }),
+        fetch(`${apiBase}/tickets`, { cache: 'no-store' }),
+        fetch(`${apiBase}/auth/sessions`, { cache: 'no-store' }),
+      ]);
+
+      if (!agentsRes.ok || !devicesRes.ok || !ticketsRes.ok || !sessionsRes.ok) {
+        throw new Error('Impossible de charger les données pour l\'export');
+      }
+
+      const agents = await agentsRes.json();
+      const devices = await devicesRes.json();
+      const ticketsData = await ticketsRes.json();
+
+      // @ts-ignore
+      const ExcelJS = await import('exceljs');
+      const wb = new ExcelJS.Workbook();
+
+      const activeAgents = agents.filter((a: any) => a.active).length;
+      const totalDevices = devices.length;
+      const activeDevices = devices.filter((d: any) => d.status === 'assigned').length;
+
+      // 1. FEUILLE : TABLEAU DE BORD
+      const wsDb = wb.addWorksheet('Tableau de Bord');
+      wsDb.views = [{ showGridLines: true }];
+
+      // Configuration des largeurs des colonnes du résumé
+      wsDb.columns = [
+        { width: 35 }, // Indicateurs
+        { width: 22 }, // Valeurs / Ventes
+        { width: 22 }, // Revenus (FCFA)
+        { width: 15 }  // Part %
+      ];
+
+      // Styles réutilisables
+      const fontName = 'Segoe UI';
+      const borderThin: any = {
+        top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+        left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+        right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+      };
+
+      // Titre Principal
+      wsDb.mergeCells('A1:D1');
+      const titleCell = wsDb.getCell('A1');
+      titleCell.value = "RAPPORTS D'ACTIVITÉ - FIFA TRANSPORT";
+      titleCell.font = { name: fontName, size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+      titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF111827' } }; // Noir / gris très foncé
+      titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      wsDb.getRow(1).height = 40;
+
+      // Date Génération
+      wsDb.mergeCells('A2:D2');
+      const dateCell = wsDb.getCell('A2');
+      dateCell.value = `Généré le : ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`;
+      dateCell.font = { name: fontName, size: 9.5, italic: true, color: { argb: 'FF6B7280' } };
+      dateCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      wsDb.getRow(2).height = 20;
+
+      // --- SECTION 1 : INDICATEURS CLÉS ---
+      wsDb.mergeCells('A4:B4');
+      const sec1Cell = wsDb.getCell('A4');
+      sec1Cell.value = "INDICATEURS CLÉS";
+      sec1Cell.font = { name: fontName, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+      sec1Cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } }; // Gris foncé
+      sec1Cell.alignment = { horizontal: 'left', vertical: 'middle' };
+      wsDb.getRow(4).height = 24;
+
+      // Entêtes Indicateurs
+      wsDb.getCell('A5').value = "Indicateur";
+      wsDb.getCell('B5').value = "Valeurs";
+      ['A5', 'B5'].forEach(cellRef => {
+        const c = wsDb.getCell(cellRef);
+        c.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }; // Gris clair
+        c.alignment = { horizontal: 'left', vertical: 'middle' };
+        c.border = borderThin;
+      });
+      wsDb.getCell('B5').alignment = { horizontal: 'right', vertical: 'middle' };
+      wsDb.getRow(5).height = 20;
+
+      // Lignes Indicateurs
+      const kpis = [
+        { label: 'Agents Actifs', val: activeAgents, numFmt: '#,##0' },
+        { label: 'Total Agents', val: agents.length, numFmt: '#,##0' },
+        { label: 'Terminaux TPE Assignés', val: activeDevices, numFmt: '#,##0' },
+        { label: 'Total Terminaux TPE', val: totalDevices, numFmt: '#,##0' },
+        { label: 'Tickets Émis (Total)', formula: 'COUNTA(Tickets!B2:B5000)', numFmt: '#,##0' },
+        { label: 'Revenus Globaux (FCFA)', formula: 'SUM(Tickets!E2:E5000)', numFmt: '#,##0" FCFA"' },
+        { label: 'Montant Moyen par Ticket (FCFA)', formula: 'AVERAGE(Tickets!E2:E5000)', numFmt: '#,##0" FCFA"' },
+      ];
+
+      kpis.forEach((kpi, idx) => {
+        const rowNum = 6 + idx;
+        const row = wsDb.getRow(rowNum);
+        row.height = 20;
+
+        const cellA = wsDb.getCell(`A${rowNum}`);
+        cellA.value = kpi.label;
+        cellA.font = { name: fontName, size: 10, color: { argb: 'FF374151' } };
+        cellA.border = borderThin;
+
+        const cellB = wsDb.getCell(`B${rowNum}`);
+        if (kpi.formula) {
+          cellB.value = { formula: kpi.formula };
+        } else {
+          cellB.value = kpi.val;
+        }
+        cellB.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+        cellB.numFmt = kpi.numFmt;
+        cellB.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellB.border = borderThin;
+      });
+
+      // --- SECTION 2 : VENTES PAR SERVICE ---
+      const serviceStartRow = 14;
+      wsDb.mergeCells(`A${serviceStartRow}:D${serviceStartRow}`);
+      const sec2Cell = wsDb.getCell(`A${serviceStartRow}`);
+      sec2Cell.value = "RÉPARTITION DES VENTES PAR SERVICE";
+      sec2Cell.font = { name: fontName, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+      sec2Cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
+      sec2Cell.alignment = { horizontal: 'left', vertical: 'middle' };
+      wsDb.getRow(serviceStartRow).height = 24;
+
+      // Entêtes Ventes par Service
+      const serviceHeaders = ['Service', 'Nombre de ventes', 'Revenus (FCFA)', 'Part (%)'];
+      const serviceHeaderCols = ['A', 'B', 'C', 'D'];
+      serviceHeaderCols.forEach((col, idx) => {
+        const cell = wsDb.getCell(`${col}${serviceStartRow + 1}`);
+        cell.value = serviceHeaders[idx];
+        cell.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+        cell.alignment = { horizontal: idx === 0 ? 'left' : 'right', vertical: 'middle' };
+        cell.border = borderThin;
+      });
+      wsDb.getRow(serviceStartRow + 1).height = 20;
+
+      // Données Service
+      const services = [
+        { name: 'PASSAGER', countFormula: 'COUNTIF(Tickets!G2:G5000, "PASSAGER")', sumFormula: 'SUMIF(Tickets!G2:G5000, "PASSAGER", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C16/B11, 0)' },
+        { name: 'COLIS', countFormula: 'COUNTIF(Tickets!G2:G5000, "COLIS")', sumFormula: 'SUMIF(Tickets!G2:G5000, "COLIS", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C17/B11, 0)' }
+      ];
+
+      services.forEach((s, idx) => {
+        const rowNum = serviceStartRow + 2 + idx; // 16 and 17
+        wsDb.getRow(rowNum).height = 20;
+
+        const cellA = wsDb.getCell(`A${rowNum}`);
+        cellA.value = s.name;
+        cellA.font = { name: fontName, size: 10, color: { argb: 'FF111827' } };
+        cellA.border = borderThin;
+
+        const cellB = wsDb.getCell(`B${rowNum}`);
+        cellB.value = { formula: s.countFormula };
+        cellB.font = { name: fontName, size: 10, color: { argb: 'FF111827' } };
+        cellB.numFmt = '#,##0';
+        cellB.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellB.border = borderThin;
+
+        const cellC = wsDb.getCell(`C${rowNum}`);
+        cellC.value = { formula: s.sumFormula };
+        cellC.font = { name: fontName, size: 10, color: { argb: 'FF111827' } };
+        cellC.numFmt = '#,##0" FCFA"';
+        cellC.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellC.border = borderThin;
+
+        const cellD = wsDb.getCell(`D${rowNum}`);
+        cellD.value = { formula: s.partFormula };
+        cellD.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+        cellD.numFmt = '0.0%';
+        cellD.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellD.border = borderThin;
+      });
+
+      // --- SECTION 3 : RÉPARTITION DES PAIEMENTS ---
+      const paymentStartRow = 19;
+      wsDb.mergeCells(`A${paymentStartRow}:D${paymentStartRow}`);
+      const sec3Cell = wsDb.getCell(`A${paymentStartRow}`);
+      sec3Cell.value = "RÉPARTITION DES PAIEMENTS";
+      sec3Cell.font = { name: fontName, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+      sec3Cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
+      sec3Cell.alignment = { horizontal: 'left', vertical: 'middle' };
+      wsDb.getRow(paymentStartRow).height = 24;
+
+      // Entêtes Paiements
+      const paymentHeaders = ['Mode de paiement', 'Nombre de ventes', 'Revenus (FCFA)', 'Part (%)'];
+      serviceHeaderCols.forEach((col, idx) => {
+        const cell = wsDb.getCell(`${col}${paymentStartRow + 1}`);
+        cell.value = paymentHeaders[idx];
+        cell.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+        cell.alignment = { horizontal: idx === 0 ? 'left' : 'right', vertical: 'middle' };
+        cell.border = borderThin;
+      });
+      wsDb.getRow(paymentStartRow + 1).height = 20;
+
+      // Données Paiements (Row 21, 22, 23)
+      const payments = [
+        { name: 'Espèces (Cash)', countFormula: 'COUNTIF(Tickets!F2:F5000, "cash")', sumFormula: 'SUMIF(Tickets!F2:F5000, "cash", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C21/B11, 0)' },
+        { name: 'Carte bancaire (Card)', countFormula: 'COUNTIF(Tickets!F2:F5000, "card")', sumFormula: 'SUMIF(Tickets!F2:F5000, "card", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C22/B11, 0)' },
+        { name: 'Paiement Mobile (Mobile)', countFormula: 'COUNTIF(Tickets!F2:F5000, "mobile")', sumFormula: 'SUMIF(Tickets!F2:F5000, "mobile", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C23/B11, 0)' }
+      ];
+
+      payments.forEach((p, idx) => {
+        const rowNum = paymentStartRow + 2 + idx; // 21, 22, 23
+        wsDb.getRow(rowNum).height = 20;
+
+        const cellA = wsDb.getCell(`A${rowNum}`);
+        cellA.value = p.name;
+        cellA.font = { name: fontName, size: 10, color: { argb: 'FF111827' } };
+        cellA.border = borderThin;
+
+        const cellB = wsDb.getCell(`B${rowNum}`);
+        cellB.value = { formula: p.countFormula };
+        cellB.font = { name: fontName, size: 10, color: { argb: 'FF111827' } };
+        cellB.numFmt = '#,##0';
+        cellB.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellB.border = borderThin;
+
+        const cellC = wsDb.getCell(`C${rowNum}`);
+        cellC.value = { formula: p.sumFormula };
+        cellC.font = { name: fontName, size: 10, color: { argb: 'FF111827' } };
+        cellC.numFmt = '#,##0" FCFA"';
+        cellC.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellC.border = borderThin;
+
+        const cellD = wsDb.getCell(`D${rowNum}`);
+        cellD.value = { formula: p.partFormula };
+        cellD.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+        cellD.numFmt = '0.0%';
+        cellD.alignment = { horizontal: 'right', vertical: 'middle' };
+        cellD.border = borderThin;
+      });
+
+      // --- SECTION 4 : GUIDE D'UTILISATION ---
+      const guideStartRow = 25;
+      wsDb.mergeCells(`A${guideStartRow}:D${guideStartRow}`);
+      const sec4Cell = wsDb.getCell(`A${guideStartRow}`);
+      sec4Cell.value = "GUIDE DE MODIFICATION & DE MANIPULATION DES DONNÉES";
+      sec4Cell.font = { name: fontName, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+      sec4Cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF111827' } }; // Noir
+      sec4Cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      wsDb.getRow(guideStartRow).height = 24;
+
+      const guideTexts = [
+        "Ce classeur Excel est dynamique. Les indicateurs et répartitions ci-dessus se recalculent automatiquement.",
+        "1. AJOUTER UN TICKET : Insérez une ligne à la suite du tableau de l'onglet 'Tickets'. Remplissez les cellules.",
+        "   Pour vous aider, des menus déroulants sont configurés pour les colonnes 'Statut', 'Mode paiement' et 'Service'.",
+        "2. MODIFIER UN TICKET : Double-cliquez et modifiez n'importe quelle valeur (ex: le Montant). Tout est mis à jour.",
+        "3. SUPPRIMER : Faites un clic droit sur le numéro de ligne dans l'onglet 'Tickets' et sélectionnez 'Supprimer'."
+      ];
+
+      guideTexts.forEach((text, idx) => {
+        const rowNum = guideStartRow + 1 + idx;
+        wsDb.mergeCells(`A${rowNum}:D${rowNum}`);
+        const cell = wsDb.getCell(`A${rowNum}`);
+        cell.value = text;
+        cell.font = { name: fontName, size: 9.5, italic: idx === 0, color: { argb: idx === 0 ? 'FF111827' : 'FF374151' } };
+        cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9FAFB' } };
+        
+        cell.border = {
+          left: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+          right: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+          top: idx === 0 ? { style: 'thin', color: { argb: 'FFD1D5DB' } } : undefined,
+          bottom: idx === guideTexts.length - 1 ? { style: 'thin', color: { argb: 'FFD1D5DB' } } : undefined
+        } as any;
+        wsDb.getRow(rowNum).height = 20;
+      });
+
+      // 2. FEUILLE : TICKETS
+      const wsTickets = wb.addWorksheet('Tickets');
+      wsTickets.views = [{ showGridLines: true }];
+
+      // Définition des colonnes de l'onglet Tickets
+      wsTickets.columns = [
+        { header: 'ID', key: 'id', width: 10 },
+        { header: 'Référence', key: 'reference', width: 22 },
+        { header: 'Date émission', key: 'created_at', width: 26 },
+        { header: 'Statut', key: 'status', width: 15 },
+        { header: 'Montant', key: 'amount', width: 16 },
+        { header: 'Mode paiement', key: 'payment_mode', width: 18 },
+        { header: 'Service', key: 'service_type', width: 14 },
+        { header: 'Trajet', key: 'route', width: 18 },
+        { header: 'Nom passager', key: 'passenger_name', width: 24 },
+        { header: 'Téléphone passager', key: 'passenger_phone', width: 18 },
+        { header: 'Détails colis', key: 'package_details', width: 25 },
+        { header: 'Nom expéditeur', key: 'sender_name', width: 22 },
+        { header: 'Téléphone expéditeur', key: 'sender_phone', width: 18 },
+        { header: 'Nom destinataire', key: 'receiver_name', width: 22 },
+        { header: 'Téléphone destinataire', key: 'receiver_phone', width: 18 },
+        { header: 'ID Terminal', key: 'device_id', width: 15 },
+        { header: 'Nom Terminal', key: 'device_label', width: 20 },
+        { header: 'ID Agent', key: 'agent_id', width: 10 },
+        { header: 'Code Agent', key: 'agent_code', width: 14 },
+        { header: 'Nom Agent', key: 'agent_name', width: 22 }
+      ];
+
+      // Appliquer les données
+      ticketsData.forEach((t: any) => {
+        wsTickets.addRow({
+          id: t.id,
+          reference: t.reference,
+          created_at: t.created_at,
+          status: t.status || 'en attente',
+          amount: t.amount,
+          payment_mode: t.payment_mode,
+          service_type: t.service_type,
+          route: t.route,
+          passenger_name: t.passenger_name || '',
+          passenger_phone: t.passenger_phone || '',
+          package_details: t.package_details || '',
+          sender_name: t.sender_name || '',
+          sender_phone: t.sender_phone || '',
+          receiver_name: t.receiver_name || '',
+          receiver_phone: t.receiver_phone || '',
+          device_id: t.device_id,
+          device_label: t.device_label || '',
+          agent_id: t.agent_id,
+          agent_code: t.agent_code || '',
+          agent_name: t.agent_name || ''
+        });
+      });
+
+      // Formater la feuille Tickets
+      const headerRow = wsTickets.getRow(1);
+      headerRow.height = 26;
+      headerRow.eachCell((cell) => {
+        cell.font = { name: fontName, size: 10.5, bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF111827' } }; // Noir
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.border = borderThin;
+      });
+
+      // Zebra striping et formatage pour les lignes de données
+      const dataRowsCount = ticketsData.length;
+      for (let i = 0; i < dataRowsCount; i++) {
+        const rowNum = 2 + i;
+        const row = wsTickets.getRow(rowNum);
+        row.height = 20;
+
+        const isEven = i % 2 === 1;
+        const bgColor = isEven ? 'FFF9FAFB' : 'FFFFFFFF'; // Zebra striping
+
+        row.eachCell((cell, colNumber) => {
+          cell.font = { name: fontName, size: 10, color: { argb: 'FF374151' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+          cell.border = borderThin;
+
+          if ([1, 4, 6, 7, 18, 19].includes(colNumber)) {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          } else if (colNumber === 5) {
+            cell.alignment = { horizontal: 'right', vertical: 'middle' };
+          } else {
+            cell.alignment = { horizontal: 'left', vertical: 'middle' };
+          }
+        });
+
+        const amountCell = wsTickets.getCell(`E${rowNum}`);
+        amountCell.numFmt = '#,##0" FCFA"';
+      }
+
+      // Validations de données (Dropdowns)
+      const lastRow = dataRowsCount + 1000;
+      (wsTickets as any).dataValidations.add(`D2:D${lastRow}`, {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"en attente,validé,annulé"'],
+        showErrorMessage: true,
+        errorTitle: 'Valeur invalide',
+        error: 'Veuillez sélectionner un statut dans la liste (en attente, validé, annulé)'
+      });
+
+      (wsTickets as any).dataValidations.add(`F2:F${lastRow}`, {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"cash,card,mobile"'],
+        showErrorMessage: true,
+        errorTitle: 'Valeur invalide',
+        error: 'Veuillez sélectionner un mode de paiement dans la liste (cash, card, mobile)'
+      });
+
+      (wsTickets as any).dataValidations.add(`G2:G${lastRow}`, {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"PASSAGER,COLIS"'],
+        showErrorMessage: true,
+        errorTitle: 'Valeur invalide',
+        error: 'Veuillez sélectionner un type de service dans la liste (PASSAGER, COLIS)'
+      });
+
+      // Ligne de Totaux / Bilan dynamique
+      const totalRow1 = dataRowsCount + 3;
+      const totalRow2 = dataRowsCount + 4;
+      wsTickets.getRow(totalRow1).height = 22;
+      wsTickets.getRow(totalRow2).height = 22;
+
+      const labelCellTotal = wsTickets.getCell(`D${totalRow1}`);
+      labelCellTotal.value = "TOTAL :";
+      labelCellTotal.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+      labelCellTotal.alignment = { horizontal: 'right', vertical: 'middle' };
+
+      const sumCell = wsTickets.getCell(`E${totalRow1}`);
+      sumCell.value = { formula: `SUM(E2:E${dataRowsCount + 1})` };
+      sumCell.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+      sumCell.numFmt = '#,##0" FCFA"';
+      sumCell.alignment = { horizontal: 'right', vertical: 'middle' };
+      sumCell.border = {
+        top: { style: 'thin', color: { argb: 'FF111827' } },
+        bottom: { style: 'double', color: { argb: 'FF111827' } }
+      } as any;
+
+      const labelCellMoy = wsTickets.getCell(`D${totalRow2}`);
+      labelCellMoy.value = "MOYENNE :";
+      labelCellMoy.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+      labelCellMoy.alignment = { horizontal: 'right', vertical: 'middle' };
+
+      const avgCell = wsTickets.getCell(`E${totalRow2}`);
+      avgCell.value = { formula: `AVERAGE(E2:E${dataRowsCount + 1})` };
+      avgCell.font = { name: fontName, size: 10, bold: true, color: { argb: 'FF111827' } };
+      avgCell.numFmt = '#,##0" FCFA"';
+      avgCell.alignment = { horizontal: 'right', vertical: 'middle' };
+      avgCell.border = {
+        bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+      } as any;
+
+      // Activer les filtres automatiques sur le tableau des Tickets
+      wsTickets.autoFilter = `A1:T${dataRowsCount + 1}`;
+
+      // Enregistrer le classeur et télécharger
+      const dateStr = new Date().toISOString().split('T')[0];
+      const buffer = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `fifa_transport_db_export_${dateStr}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erreur inconnue lors de l\'export');
+    } finally {
+      setExporting(false);
+    }
+  };
+
 
   // Period state
   const [period, setPeriod] = useState<'all' | 'daily' | 'weekly' | 'monthly' | 'yearly'>('all');
@@ -227,6 +681,16 @@ export default function DashboardPage() {
         title="Dashboard"
         subtitle="Vue d'ensemble de l'activité FIFA Transport"
         breadcrumb={[{ label: 'Accueil' }]}
+        actions={
+          <button
+            onClick={handleExportExcel}
+            disabled={exporting}
+            className="btn btn-primary"
+            type="button"
+          >
+            {exporting ? 'Exportation...' : '📥 Exporter Base (Excel)'}
+          </button>
+        }
       />
 
       {/* Temporal Filter Control Center */}

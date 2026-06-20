@@ -12,6 +12,9 @@ const statusMap: Record<string, { label: string; variant: string }> = {
   cash: { label: 'Espèces', variant: 'badge-info' },
   mobile: { label: 'Mobile', variant: 'badge-info' },
   card: { label: 'Carte', variant: 'badge-info' },
+  'en attente': { label: 'En attente', variant: 'badge-neutral' },
+  'validé': { label: 'Validé', variant: 'badge-success' },
+  'annulé': { label: 'Annulé', variant: 'badge-danger' },
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {
