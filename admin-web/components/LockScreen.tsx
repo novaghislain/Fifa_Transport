@@ -22,7 +22,7 @@ export function LockScreen({ children }: LockScreenProps) {
     setIsLocked(!sessionUnlocked);
   }, []);
 
-  // Inactivity tracking (1 minute = 60000ms)
+  // Inactivity tracking (3 minutes = 180000ms)
   useEffect(() => {
     if (isLocked || !isMounted) return;
 
@@ -33,7 +33,7 @@ export function LockScreen({ children }: LockScreenProps) {
       timeoutId = setTimeout(() => {
         setIsLocked(true);
         sessionStorage.setItem('fifa_admin_session_unlocked', 'false');
-      }, 60000); // 1 minute of inactivity
+      }, 180000); // 3 minute of inactivity
     };
 
     const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'];
@@ -231,7 +231,7 @@ export function LockScreen({ children }: LockScreenProps) {
           </form>
 
           <p style={{ color: '#636366', fontSize: '0.75rem', marginTop: 24, marginBottom: 0 }}>
-            Déconnexion et verrouillage automatique après 1 minute d'inactivité.
+            Déconnexion et verrouillage automatique après 3 minutes d'inactivité.
           </p>
         </div>
 

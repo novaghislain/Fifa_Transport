@@ -4,6 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { PageHeader } from '@/components/PageHeader';
 import { StatsCard } from '@/components/StatsCard';
 import { StatusBadge } from '@/components/StatusBadge';
+import { Modal } from '@/components/Modal';
+import ExcelJS from 'exceljs';
 
 const apiBase = process.env.NEXT_PUBLIC_ADMIN_API_BASE_URL ?? '/api';
 
@@ -17,6 +19,32 @@ function formatDate(dateStr: string): string {
       hour: '2-digit',
       minute: '2-digit',
     }).format(date);
+  } catch {
+    return dateStr;
+  }
+}
+
+function formatToBeninTime(dateStr: string): string {
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    const formatter = new Intl.DateTimeFormat('fr-CA', {
+      timeZone: 'Africa/Porto-Novo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const partMap = new Map(parts.map(p => [p.type, p.value]));
+    const yyyy = partMap.get('year');
+    const mm = partMap.get('month');
+    const dd = partMap.get('day');
+    const hh = partMap.get('hour');
+    const min = partMap.get('minute');
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
   } catch {
     return dateStr;
   }
@@ -49,8 +77,10 @@ export default function DashboardPage() {
   const [dashboard, setDashboard] = useState<any>(null);
   const [tickets, setTickets] = useState<any[]>([]);
   const [exporting, setExporting] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportPeriod, setExportPeriod] = useState<'today' | 'week' | 'month' | 'year' | 'all'>('all');
 
-  const handleExportExcel = async () => {
+  const handleExportExcel = async (selectedPeriod: 'today' | 'week' | 'month' | 'year' | 'all' = 'all') => {
     if (exporting) return;
     try {
       setExporting(true);
@@ -69,13 +99,61 @@ export default function DashboardPage() {
       const devices = await devicesRes.json();
       const ticketsData = await ticketsRes.json();
 
-      // @ts-ignore
-      const ExcelJS = await import('exceljs');
+      // Filtrer les tickets selon la période sélectionnée
+      let filteredExportTickets = [...ticketsData];
+      let periodLabelForExcel = 'Toutes périodes confondues';
+      let periodSuffix = 'global';
+
+      const now = new Date();
+      if (selectedPeriod === 'today') {
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        filteredExportTickets = ticketsData.filter((t: any) => t.created_at.startsWith(todayStr));
+        periodLabelForExcel = `Aujourd'hui (${now.toLocaleDateString('fr-FR')})`;
+        periodSuffix = `aujourdhui_${todayStr}`;
+      } else if (selectedPeriod === 'week') {
+        const getStartOfWeek = (d: Date) => {
+          const date = new Date(d);
+          const day = date.getDay();
+          const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+          const monday = new Date(date.setDate(diff));
+          monday.setHours(0, 0, 0, 0);
+          return monday;
+        };
+        const weekStart = getStartOfWeek(now);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 7);
+
+        filteredExportTickets = ticketsData.filter((t: any) => {
+          const d = new Date(t.created_at);
+          return d >= weekStart && d < weekEnd;
+        });
+
+        const endLabelDate = new Date(weekStart);
+        endLabelDate.setDate(weekStart.getDate() + 6);
+        periodLabelForExcel = `Cette semaine (du ${weekStart.toLocaleDateString('fr-FR', { day: 'numeric', month: 'numeric' })} au ${endLabelDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'numeric', year: 'numeric' })})`;
+        const weekNo = Math.ceil((((now.getTime() - new Date(now.getFullYear(), 0, 1).getTime()) / 86400000) + 1) / 7);
+        periodSuffix = `semaine_${now.getFullYear()}-W${weekNo}`;
+      } else if (selectedPeriod === 'month') {
+        const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        filteredExportTickets = ticketsData.filter((t: any) => t.created_at.startsWith(currentMonthStr));
+        const dateObj = new Date(now.getFullYear(), now.getMonth(), 1);
+        periodLabelForExcel = `Ce mois (${dateObj.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })})`;
+        periodSuffix = `mois_${currentMonthStr}`;
+      } else if (selectedPeriod === 'year') {
+        const currentYearStr = String(now.getFullYear());
+        filteredExportTickets = ticketsData.filter((t: any) => t.created_at.startsWith(currentYearStr));
+        periodLabelForExcel = `Cette année (${now.getFullYear()})`;
+        periodSuffix = `annee_${currentYearStr}`;
+      }
+
       const wb = new ExcelJS.Workbook();
 
       const activeAgents = agents.filter((a: any) => a.active).length;
       const totalDevices = devices.length;
       const activeDevices = devices.filter((d: any) => d.status === 'assigned').length;
+
+      const dataRowsCount = filteredExportTickets.length;
+      const endRow = dataRowsCount > 0 ? dataRowsCount + 1 : 2;
 
       // 1. FEUILLE : TABLEAU DE BORD
       const wsDb = wb.addWorksheet('Tableau de Bord');
@@ -107,10 +185,10 @@ export default function DashboardPage() {
       titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
       wsDb.getRow(1).height = 40;
 
-      // Date Génération
+      // Date Génération & Période d'exportation
       wsDb.mergeCells('A2:D2');
       const dateCell = wsDb.getCell('A2');
-      dateCell.value = `Généré le : ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`;
+      dateCell.value = `Généré le : ${now.toLocaleDateString('fr-FR')} à ${now.toLocaleTimeString('fr-FR')} | Période : ${periodLabelForExcel}`;
       dateCell.font = { name: fontName, size: 9.5, italic: true, color: { argb: 'FF6B7280' } };
       dateCell.alignment = { horizontal: 'left', vertical: 'middle' };
       wsDb.getRow(2).height = 20;
@@ -143,9 +221,9 @@ export default function DashboardPage() {
         { label: 'Total Agents', val: agents.length, numFmt: '#,##0' },
         { label: 'Terminaux TPE Assignés', val: activeDevices, numFmt: '#,##0' },
         { label: 'Total Terminaux TPE', val: totalDevices, numFmt: '#,##0' },
-        { label: 'Tickets Émis (Total)', formula: 'COUNTA(Tickets!B2:B5000)', numFmt: '#,##0' },
-        { label: 'Revenus Globaux (FCFA)', formula: 'SUM(Tickets!E2:E5000)', numFmt: '#,##0" FCFA"' },
-        { label: 'Montant Moyen par Ticket (FCFA)', formula: 'AVERAGE(Tickets!E2:E5000)', numFmt: '#,##0" FCFA"' },
+        { label: 'Tickets Émis (Total)', formula: `COUNTA(Tickets!B2:B${endRow})`, numFmt: '#,##0' },
+        { label: 'Revenus Globaux (FCFA)', formula: `SUM(Tickets!E2:E${endRow})`, numFmt: '#,##0" FCFA"' },
+        { label: 'Montant Moyen par Ticket (FCFA)', formula: `IF(B10>0, AVERAGE(Tickets!E2:E${endRow}), 0)`, numFmt: '#,##0" FCFA"' },
       ];
 
       kpis.forEach((kpi, idx) => {
@@ -195,8 +273,8 @@ export default function DashboardPage() {
 
       // Données Service
       const services = [
-        { name: 'PASSAGER', countFormula: 'COUNTIF(Tickets!G2:G5000, "PASSAGER")', sumFormula: 'SUMIF(Tickets!G2:G5000, "PASSAGER", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C16/B11, 0)' },
-        { name: 'COLIS', countFormula: 'COUNTIF(Tickets!G2:G5000, "COLIS")', sumFormula: 'SUMIF(Tickets!G2:G5000, "COLIS", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C17/B11, 0)' }
+        { name: 'PASSAGER', countFormula: `COUNTIF(Tickets!G2:G${endRow}, "PASSAGER")`, sumFormula: `SUMIF(Tickets!G2:G${endRow}, "PASSAGER", Tickets!E2:E${endRow})`, partFormula: 'IF(B11>0, C16/B11, 0)' },
+        { name: 'COLIS', countFormula: `COUNTIF(Tickets!G2:G${endRow}, "COLIS")`, sumFormula: `SUMIF(Tickets!G2:G${endRow}, "COLIS", Tickets!E2:E${endRow})`, partFormula: 'IF(B11>0, C17/B11, 0)' }
       ];
 
       services.forEach((s, idx) => {
@@ -254,9 +332,9 @@ export default function DashboardPage() {
 
       // Données Paiements (Row 21, 22, 23)
       const payments = [
-        { name: 'Espèces (Cash)', countFormula: 'COUNTIF(Tickets!F2:F5000, "cash")', sumFormula: 'SUMIF(Tickets!F2:F5000, "cash", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C21/B11, 0)' },
-        { name: 'Carte bancaire (Card)', countFormula: 'COUNTIF(Tickets!F2:F5000, "card")', sumFormula: 'SUMIF(Tickets!F2:F5000, "card", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C22/B11, 0)' },
-        { name: 'Paiement Mobile (Mobile)', countFormula: 'COUNTIF(Tickets!F2:F5000, "mobile")', sumFormula: 'SUMIF(Tickets!F2:F5000, "mobile", Tickets!E2:E5000)', partFormula: 'IF(B10>0, C23/B11, 0)' }
+        { name: 'Espèces (Cash)', countFormula: `COUNTIF(Tickets!F2:F${endRow}, "cash")`, sumFormula: `SUMIF(Tickets!F2:F${endRow}, "cash", Tickets!E2:E${endRow})`, partFormula: 'IF(B11>0, C21/B11, 0)' },
+        { name: 'Carte bancaire (Card)', countFormula: `COUNTIF(Tickets!F2:F${endRow}, "card")`, sumFormula: `SUMIF(Tickets!F2:F${endRow}, "card", Tickets!E2:E${endRow})`, partFormula: 'IF(B11>0, C22/B11, 0)' },
+        { name: 'Paiement Mobile (Mobile)', countFormula: `COUNTIF(Tickets!F2:F${endRow}, "mobile")`, sumFormula: `SUMIF(Tickets!F2:F${endRow}, "mobile", Tickets!E2:E${endRow})`, partFormula: 'IF(B11>0, C23/B11, 0)' }
       ];
 
       payments.forEach((p, idx) => {
@@ -355,11 +433,11 @@ export default function DashboardPage() {
       ];
 
       // Appliquer les données
-      ticketsData.forEach((t: any) => {
+      filteredExportTickets.forEach((t: any) => {
         wsTickets.addRow({
           id: t.id,
           reference: t.reference,
-          created_at: t.created_at,
+          created_at: formatToBeninTime(t.created_at),
           status: t.status || 'en attente',
           amount: t.amount,
           payment_mode: t.payment_mode,
@@ -391,7 +469,6 @@ export default function DashboardPage() {
       });
 
       // Zebra striping et formatage pour les lignes de données
-      const dataRowsCount = ticketsData.length;
       for (let i = 0; i < dataRowsCount; i++) {
         const rowNum = 2 + i;
         const row = wsTickets.getRow(rowNum);
@@ -486,13 +563,13 @@ export default function DashboardPage() {
       wsTickets.autoFilter = `A1:T${dataRowsCount + 1}`;
 
       // Enregistrer le classeur et télécharger
-      const dateStr = new Date().toISOString().split('T')[0];
+      const dateStr = now.toISOString().split('T')[0];
       const buffer = await wb.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `fifa_transport_db_export_${dateStr}.xlsx`;
+      a.download = `fifa_transport_export_${periodSuffix}_${dateStr}.xlsx`;
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
@@ -683,12 +760,12 @@ export default function DashboardPage() {
         breadcrumb={[{ label: 'Accueil' }]}
         actions={
           <button
-            onClick={handleExportExcel}
+            onClick={() => setShowExportModal(true)}
             disabled={exporting}
             className="btn btn-primary"
             type="button"
           >
-            {exporting ? 'Exportation...' : '📥 Exporter Base (Excel)'}
+            {exporting ? 'Exportation...' : 'Exporter Base (Excel)'}
           </button>
         }
       />
@@ -1002,6 +1079,84 @@ export default function DashboardPage() {
           </div>
         </a>
       </div>
+
+      {/* Modale d'export Excel avec filtre de période */}
+      <Modal
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        title="Exporter les données (Excel)"
+        size="sm"
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, width: '100%' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => setShowExportModal(false)}
+              type="button"
+              style={{ padding: '8px 16px', fontSize: '0.85rem' }}
+            >
+              Annuler
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setShowExportModal(false);
+                handleExportExcel(exportPeriod);
+              }}
+              disabled={exporting}
+              type="button"
+              style={{ padding: '8px 16px', fontSize: '0.85rem' }}
+            >
+              {exporting ? 'Exportation...' : 'Exporter'}
+            </button>
+          </div>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Sélectionnez la période des données de tickets à exporter. Les autres données (agents, terminaux) seront exportées dans leur totalité.
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {(['today', 'week', 'month', 'year', 'all'] as const).map((p) => {
+              const label = p === 'today' ? "Aujourd'hui" :
+                            p === 'week' ? "Cette semaine" :
+                            p === 'month' ? "Ce mois" :
+                            p === 'year' ? "Cette année" :
+                            "Toutes les données";
+              return (
+                <label
+                  key={p}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border)',
+                    background: exportPeriod === p ? 'rgba(245, 197, 24, 0.08)' : 'transparent',
+                    borderColor: exportPeriod === p ? '#F5C518' : 'var(--border)',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    color: exportPeriod === p ? '#FFF' : 'var(--text-secondary)',
+                    fontWeight: exportPeriod === p ? 600 : 400,
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="exportPeriod"
+                    value={p}
+                    checked={exportPeriod === p}
+                    onChange={() => setExportPeriod(p)}
+                    style={{ accentColor: '#F5C518', cursor: 'pointer' }}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }
